@@ -6,6 +6,12 @@ Sistema de **geolocalização indoor por Wi-Fi fingerprinting** com ESP32 e Mach
 
 ---
 
+## Contexto: Vidi 2.0
+
+O VidiWaze é um módulo do **Vidi 2.0**, um óculos que usa visão computacional para descrever e identificar o ambiente para pessoas com deficiência visual.
+
+Os dois sistemas se complementam. O Vidi 2.0 responde *"o que está à minha volta?"*, e o VidiWaze responde *"onde estou dentro do prédio?"*. O VidiWaze é desenvolvido como um projeto à parte e será integrado ao Vidi 2.0.
+
 ## Motivação
 
 O GPS não funciona bem dentro de edifícios. Já os pontos de acesso Wi-Fi estão presentes em praticamente todo ambiente interno, e a intensidade do sinal recebido (RSSI) de cada AP varia de forma característica conforme a posição. Esse padrão é a *impressão digital* (fingerprint) do lugar, e um modelo de ML consegue aprender a reconhecê-la.
@@ -38,7 +44,7 @@ O VidiWaze usa essa ideia para estimar em qual ponto de um corredor o usuário e
 | Módulo step-up MT3608 | Eleva 3,7 V da LiPo para 5 V (pino VIN) |
 | Bateria LiPo 3,7 V (≥ 1000 mAh) | Alimentação portátil |
 | Capacitor 470 µF | Absorve picos de corrente do rádio Wi-Fi (evita *brownout*) |
-| Botões (2) + LCD 16×2 I²C | Seleção do ponto de coleta e exibição de status |
+| Botões (2) + LCD 16×2 I²C | Seleção do ponto de coleta e exibição de status (uso no desenvolvimento) |
 
 O esquemático em nível de módulos está em [`docs/esquematico_vidiwaze.pdf`](docs/esquematico_vidiwaze.pdf).
 
