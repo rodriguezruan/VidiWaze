@@ -65,17 +65,6 @@ eHealth_p01  |      -74       |      -81       | ... |     -100
 
 A coluna de SNR não entra no treino. O piso de ruído não é medido de forma confiável pelo hardware, então o SNR calculado é só o RSSI deslocado por uma constante. A feature usada é o RSSI por BSSID.
 
-## Como reproduzir
-
-### Coleta
-1. Crie uma planilha no Google Sheets e implante um Google Apps Script como *Web App* com um `doPost` que grave as linhas recebidas (`appendRow`).
-2. Copie `config.example.h` para `config.h` e preencha o SSID, a senha e a URL do Web App. **Não versione esse arquivo.**
-3. Grave o firmware de coleta no ESP32, defina o ponto (por botão ou comando serial `LABEL <nome>`) e confirme (`OK`) para iniciar a gravação.
-
-### Treino
-1. Abra o notebook no Google Colab e autorize o acesso à planilha (`gspread`).
-2. Execute as células na ordem: carga → limpeza → pivot → normalização → treino/avaliação.
-
 ## Referência
 
 Attar, H. et al. *Machine learning in indoor localization prediction using Received Signal Strength Indicator and Wi-Fi network.* International Journal of Intelligent Networks, v. 6, p. 233–243, 2025. DOI: [10.1016/j.ijin.2025.10.001](https://doi.org/10.1016/j.ijin.2025.10.001)
