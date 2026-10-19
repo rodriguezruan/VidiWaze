@@ -75,7 +75,3 @@ Pré-processamento (preenchimento de APs ausentes com -100 dBm, normalização M
 
 **Ruan Rodrigues**: Engenharia de Software, [Inatel](https://inatel.br)
 [LinkedIn](https://linkedin.com/in/ruan-rodrigues-rdg) · [GitHub](https://github.com/rodriguezruan)
-
-## Licença
-
-Defina a licença do projeto (por exemplo, MIT) antes de publicar.
