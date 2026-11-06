@@ -32,7 +32,7 @@ const unsigned long DEBOUNCE_MS = 300;
 // ── Configuracoes ─────────────────────────────────────────────────────────────
 const unsigned long CONNECT_TIMEOUT    = 15000;
 const unsigned long RECONNECT_INTERVAL = 5000;
-const unsigned long SCAN_LOG_INTERVAL  = 5000;
+const unsigned long SCAN_LOG_INTERVAL  = 2000;
 
 unsigned long lastReconnectAttempt = 0;
 unsigned long lastScanLog          = 0;
