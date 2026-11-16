@@ -1,47 +1,67 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <LiquidCrystal.h>
 #include <vector>
 
-const char* ssid     = "WLL-Inatel";
-const char* password = "inatelsemfio";
+// ── Configuração (não suba este arquivo com senha para o GitHub) ─────────────
+const char* ssid            = "WLL-Inatel";
+const char* password        = "inatelsemfio";
 const char* googleScriptUrl = "https://script.google.com/macros/s/AKfycbyxF1hc8aXIXojRj49McqN21UyscO-y_8C1na94D8BhOUTSYUoy8TubGdj1meEisce1YA/exec";
 
-// ── Botoes (INPUT_PULLUP: conecte entre o pino e GND) ────────────────────────
-const int NEXT_BTN    = 14;
-const int CONFIRM_BTN = 27;
+// ── LCD em modo paralelo: RS, E, D4, D5, D6, D7 ──────────────────────────────
+LiquidCrystal lcd(19, 23, 18, 17, 16, 15);
 
-// ── Lista de pontos ───────────────────────────────────────────────────────────
-const char* POINTS[] = {
-  "eHealth_p01",
-  "eHealth_p02",
-  "eHealth_p03",
-  "eHealth_p04",
-  "eHealth_p05"
-};
+// ── Botões (INPUT_PULLUP: ligar entre o pino e o GND) ────────────────────────
+const int NEXT_BTN    = 14;   // troca de ponto e pausa a coleta
+const int CONFIRM_BTN = 27;   // inicia / pausa a coleta
+
+// ── Pontos de coleta ─────────────────────────────────────────────────────────
+const char* POINTS[] = { "eHealth_p01", "eHealth_p02", "eHealth_p03", "eHealth_p04", "eHealth_p05" };
 const int NUM_POINTS = sizeof(POINTS) / sizeof(POINTS[0]);
 
-// ── Estado ────────────────────────────────────────────────────────────────────
-int  currentPointIndex = 0;
-char currentLabel[64];
-bool collectingEnabled = false;
-
-unsigned long lastNextPress    = 0;
-unsigned long lastConfirmPress = 0;
-const unsigned long DEBOUNCE_MS = 300;
-
-// ── Configuracoes ─────────────────────────────────────────────────────────────
+// ── Tempos ───────────────────────────────────────────────────────────────────
 const unsigned long CONNECT_TIMEOUT    = 15000;
 const unsigned long RECONNECT_INTERVAL = 5000;
-const unsigned long SCAN_LOG_INTERVAL  = 2000;
+const unsigned long SCAN_INTERVAL      = 2000;   // ms entre scans
+const unsigned long DEBOUNCE_MS        = 50;
+
+// ── Estado ───────────────────────────────────────────────────────────────────
+int    pointIndex   = 0;
+bool   collecting   = false;
+String sessao       = "s1";        // troque pelo Serial: SESSAO <nome>
+unsigned long sampleId      = 0;   // contador global (vai para o Sheets)
+unsigned long samplesPoint  = 0;   // amostras do ponto atual nesta sessão
+int    lastApsFound = 0;
+String lastStatus   = "";
 
 unsigned long lastReconnectAttempt = 0;
-unsigned long lastScanLog          = 0;
-unsigned long sampleId             = 0;
+unsigned long lastScan = 0;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LCD
+// ─────────────────────────────────────────────────────────────────────────────
+void lcdLine(int row, String text) {
+  while (text.length() < 16) text += ' ';   // limpa sobras da linha anterior
+  lcd.setCursor(0, row);
+  lcd.print(text.substring(0, 16));
+}
+
+void showStatus() {
+  lcdLine(0, POINTS[pointIndex]);
+  if (WiFi.status() != WL_CONNECTED) {
+    lcdLine(1, "Sem Wi-Fi...");
+  } else if (!collecting) {
+    lcdLine(1, "Pausado n=" + String(samplesPoint));
+  } else {
+    lcdLine(1, "n=" + String(samplesPoint) + " AP=" + String(lastApsFound) + " " + lastStatus);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Wi-Fi
 // ─────────────────────────────────────────────────────────────────────────────
 bool connectWiFi() {
+  lcdLine(1, "Conectando...");
   Serial.print("Conectando");
   WiFi.begin(ssid, password);
   unsigned long start = millis();
@@ -49,185 +69,158 @@ bool connectWiFi() {
     delay(300);
     Serial.print(".");
   }
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nConectado! IP: " + WiFi.localIP().toString());
-    return true;
-  }
-  Serial.println("\nFalha ao conectar.");
-  return false;
+  bool ok = WiFi.status() == WL_CONNECTED;
+  Serial.println(ok ? "\nConectado! IP: " + WiFi.localIP().toString() : "\nFalha ao conectar.");
+  showStatus();
+  return ok;
 }
 
 void maybeReconnect() {
   if (WiFi.status() == WL_CONNECTED) return;
-  unsigned long now = millis();
-  if (now - lastReconnectAttempt < RECONNECT_INTERVAL) return;
-  lastReconnectAttempt = now;
-  Serial.println("Reconectando...");
+  if (millis() - lastReconnectAttempt < RECONNECT_INTERVAL) return;
+  lastReconnectAttempt = millis();
   WiFi.disconnect();
   connectWiFi();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Gerenciamento de label
+// Controle de ponto e coleta
 // ─────────────────────────────────────────────────────────────────────────────
-void applyLabel(const char* label) {
-  strncpy(currentLabel, label, sizeof(currentLabel) - 1);
-  currentLabel[sizeof(currentLabel) - 1] = '\0';
-  collectingEnabled = false;
-  Serial.println("[LABEL] " + String(currentLabel) + " - envie OK para iniciar coleta");
+void nextPoint() {
+  collecting   = false;
+  pointIndex   = (pointIndex + 1) % NUM_POINTS;
+  samplesPoint = 0;
+  Serial.println("[PONTO] " + String(POINTS[pointIndex]) + " (pausado)");
+  showStatus();
 }
 
-void confirmAndStartCollecting() {
-  collectingEnabled = true;
-  Serial.println("[COLETANDO] " + String(currentLabel));
+void toggleCollecting() {
+  collecting = !collecting;
+  lastStatus = "";
+  Serial.println(collecting ? "[COLETANDO] " + String(POINTS[pointIndex]) : "[PAUSADO]");
+  showStatus();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Botoes
-// ─────────────────────────────────────────────────────────────────────────────
+// Detecta só a borda de descida (aperto), não repete enquanto o botão está pressionado
+bool pressed(int pin, int &lastState, unsigned long &lastChange) {
+  int s = digitalRead(pin);
+  if (s != lastState && millis() - lastChange > DEBOUNCE_MS) {
+    lastChange = millis();
+    lastState  = s;
+    return s == LOW;
+  }
+  return false;
+}
+
+int nextState = HIGH, confirmState = HIGH;
+unsigned long nextChange = 0, confirmChange = 0;
+
 void handleButtons() {
-  unsigned long now = millis();
-
-  if (digitalRead(NEXT_BTN) == LOW && now - lastNextPress > DEBOUNCE_MS) {
-    lastNextPress = now;
-    currentPointIndex = (currentPointIndex + 1) % NUM_POINTS;
-    applyLabel(POINTS[currentPointIndex]);
-  }
-
-  if (digitalRead(CONFIRM_BTN) == LOW && now - lastConfirmPress > DEBOUNCE_MS) {
-    lastConfirmPress = now;
-    confirmAndStartCollecting();
-  }
+  if (pressed(NEXT_BTN, nextState, nextChange))       nextPoint();
+  if (pressed(CONFIRM_BTN, confirmState, confirmChange)) toggleCollecting();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Comandos seriais
-// Comandos: LABEL <nome> | NEXT | OK | STATUS
-// ─────────────────────────────────────────────────────────────────────────────
-void handleSerialCommands() {
+// Comandos pelo Serial: NEXT | OK | SESSAO <nome> | STATUS
+void handleSerial() {
   if (!Serial.available()) return;
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
-
-  if (cmd.startsWith("LABEL ")) {
-    String newLabel = cmd.substring(6);
-    newLabel.trim();
-    if (newLabel.length() > 0) applyLabel(newLabel.c_str());
-    else Serial.println("Uso: LABEL <nome>");
-
-  } else if (cmd == "NEXT") {
-    currentPointIndex = (currentPointIndex + 1) % NUM_POINTS;
-    applyLabel(POINTS[currentPointIndex]);
-
-  } else if (cmd == "OK") {
-    confirmAndStartCollecting();
-
+  if (cmd == "NEXT") nextPoint();
+  else if (cmd == "OK") toggleCollecting();
+  else if (cmd.startsWith("SESSAO ")) {
+    sessao = cmd.substring(7);
+    sessao.trim();
+    samplesPoint = 0;
+    Serial.println("[SESSAO] " + sessao);
   } else if (cmd == "STATUS") {
-    Serial.println("[STATUS] Label: " + String(currentLabel));
-    Serial.println("[STATUS] Coletando: " + String(collectingEnabled ? "SIM" : "NAO"));
-    Serial.println("[STATUS] Sample ID: " + String(sampleId));
-
+    Serial.println("[STATUS] ponto=" + String(POINTS[pointIndex]) + " sessao=" + sessao +
+                   " coletando=" + String(collecting ? "SIM" : "NAO") +
+                   " n=" + String(samplesPoint) + " sample_id=" + String(sampleId));
   } else if (cmd.length() > 0) {
-    Serial.println("Comandos: LABEL <nome> | NEXT | OK | STATUS");
+    Serial.println("Comandos: NEXT | OK | SESSAO <nome> | STATUS");
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Sheets
 // ─────────────────────────────────────────────────────────────────────────────
-String csvLineToJsonArray(const String& csvLine) {
-  String json = "[";
-  String line = csvLine;
-  int pos;
-  bool first = true;
-  while ((pos = line.indexOf(',')) != -1) {
-    String val = line.substring(0, pos);
-    if (!first) json += ",";
-    json += "\"" + val + "\"";
-    first = false;
-    line = line.substring(pos + 1);
-  }
-  if (!first) json += ",";
-  json += "\"" + line + "\"";
-  json += "]";
-  return json;
-}
+bool sendToSheets(const std::vector<String>& rows) {
+  if (rows.empty() || WiFi.status() != WL_CONNECTED) return false;
 
-void sendRowsToGoogleSheets(const std::vector<String>& rows) {
-  if (rows.empty() || WiFi.status() != WL_CONNECTED) return;
-
-  String jsonPayload = "{\"data\":[";
+  String json = "{\"data\":[";
   for (size_t i = 0; i < rows.size(); i++) {
-    if (i > 0) jsonPayload += ",";
-    jsonPayload += csvLineToJsonArray(rows[i]);
+    if (i > 0) json += ",";
+    json += rows[i];
   }
-  jsonPayload += "]}";
+  json += "]}";
 
-  // No ESP32 o HTTPClient nao precisa de WiFiClientSecure separado
-  // para HTTPS — ele resolve internamente com o stack TLS embutido.
   HTTPClient http;
-  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);;
+  // O Apps Script grava os dados ANTES de responder com 302; não seguimos o redirect.
+  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
   http.begin(googleScriptUrl);
   http.addHeader("Content-Type", "application/json");
-  int code = http.POST(jsonPayload);
-  Serial.println("[SHEETS] HTTP " + String(code));
+  int code = http.POST(json);
   http.end();
+
+  Serial.println("[SHEETS] HTTP " + String(code));
+  return code == 200 || code == 302;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Scan e log
+// Scan
 // ─────────────────────────────────────────────────────────────────────────────
-void scanAndLogAllAPs() {
-  if (!collectingEnabled) return;
-  if (WiFi.status() != WL_CONNECTED) return;
-
+void scanAndSend() {
   int n = WiFi.scanNetworks(false, true);
-
-  std::vector<String> rowsForSheets;
-  int found = 0;
+  std::vector<String> rows;
 
   for (int i = 0; i < n; i++) {
     if (WiFi.SSID(i) != ssid) continue;
-    found++;
-    int rssi    = WiFi.RSSI(i);
-    String line = String(currentLabel) + "," + ssid         + "," +
-                  WiFi.BSSIDstr(i)     + "," + String(rssi) + "," +
-                  String(sampleId);
-    Serial.println(line);
-    rowsForSheets.push_back(line);
+    // colunas: label, ssid, bssid, rssi_dbm, sample_id, sessao
+    String row = "[\"" + String(POINTS[pointIndex]) + "\",\"" + ssid + "\",\"" +
+                 WiFi.BSSIDstr(i) + "\",\"" + String(WiFi.RSSI(i)) + "\",\"" +
+                 String(sampleId) + "\",\"" + sessao + "\"]";
+    rows.push_back(row);
   }
-
-  Serial.println("[SCAN] APs encontrados com SSID alvo: " + String(found));
-  sendRowsToGoogleSheets(rowsForSheets);
-  sampleId++;
   WiFi.scanDelete();
+
+  lastApsFound = rows.size();
+  bool ok = sendToSheets(rows);
+  lastStatus = ok ? "OK" : "ERRO";
+  if (ok) {
+    sampleId++;
+    samplesPoint++;
+  }
+  Serial.println("[SCAN] " + String(POINTS[pointIndex]) + " APs=" + String(lastApsFound) +
+                 " n=" + String(samplesPoint) + " " + lastStatus);
+  showStatus();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(500);
 
-  pinMode(NEXT_BTN,    INPUT_PULLUP);
+  pinMode(NEXT_BTN, INPUT_PULLUP);
   pinMode(CONFIRM_BTN, INPUT_PULLUP);
 
-  applyLabel(POINTS[0]);
+  lcd.begin(16, 2);
+  lcdLine(0, "VidiWaze coleta");
+  lcdLine(1, "Iniciando...");
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   connectWiFi();
 
-  Serial.println("Pronto. Comandos: LABEL <nome> | NEXT | OK | STATUS");
+  Serial.println("Pronto. Botoes: NEXT (14) / CONFIRM (27). Serial: NEXT | OK | SESSAO <nome> | STATUS");
 }
 
 void loop() {
   handleButtons();
-  handleSerialCommands();
+  handleSerial();
   maybeReconnect();
 
-  unsigned long now = millis();
-  if (now - lastScanLog >= SCAN_LOG_INTERVAL) {
-    lastScanLog = now;
-    scanAndLogAllAPs();
+  if (collecting && WiFi.status() == WL_CONNECTED && millis() - lastScan >= SCAN_INTERVAL) {
+    lastScan = millis();
+    scanAndSend();
   }
 }
